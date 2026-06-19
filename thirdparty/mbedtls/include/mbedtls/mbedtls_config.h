@@ -31,8 +31,8 @@
 /* Required by GCM internals */
 #define MBEDTLS_CIPHER_MODE_CTR
 
-/* Use standard C library calloc/free directly */
-
-#include "mbedtls/check_config.h"
+/* Use standard C library calloc/free directly.
+ * Do NOT include check_config.h here — build_info.h handles the
+ * config_adjust → check_config include chain in the correct order. */
 
 #endif /* MBEDTLS_CONFIG_H */
