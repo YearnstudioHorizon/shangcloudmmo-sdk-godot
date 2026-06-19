@@ -1,0 +1,14 @@
+[configuration]
+entry_symbol = "shangcloud_mmo_library_init"
+compatibility_minimum = "4.1"
+reloadable = true
+
+[libraries]
+windows.debug.x86_64 = "res://bin/windows/libshangcloud_mmo.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/windows/libshangcloud_mmo.windows.template_release.x86_64.dll"
+linux.debug.x86_64 = "res://bin/linux/libshangcloud_mmo.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/linux/libshangcloud_mmo.linux.template_release.x86_64.so"
+macos.debug = "res://bin/macos/libshangcloud_mmo.macos.template_debug.framework"
+macos.release = "res://bin/macos/libshangcloud_mmo.macos.template_release.framework"
+
+[dependencies]

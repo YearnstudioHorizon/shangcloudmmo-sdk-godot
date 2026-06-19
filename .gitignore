@@ -1,0 +1,20 @@
+# SCons
+.sconsign.dblite
+*.os
+*.o
+
+# Build output
+bin/
+
+# Generated
+src/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Godot
+demo/.godot/
+demo/.import/
