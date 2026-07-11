@@ -1,6 +1,7 @@
 #include "mmo_interp_engine.h"
 
-#include <godot_cpp/variant/utility_functions.hpp>
+#include <algorithm>
+#include <cmath>
 
 namespace godot {
 
@@ -10,7 +11,7 @@ MmoInterpEngine::MmoInterpEngine() {
 bool MmoInterpEngine::is_numeric(const String &p_str, double &r_out) const {
 	String s = p_str.strip_edges();
 	if (s.is_empty()) return false;
-	if (!UtilityFunctions::is_numeric(s)) {
+	if (!s.is_valid_float()) {
 		return false;
 	}
 	r_out = s.to_float();
@@ -43,8 +44,9 @@ void MmoInterpEngine::apply_sync(const String &p_uid, const Dictionary &p_vars, 
 	// 遍历 vars
 	Array keys = p_vars.keys();
 	for (int i = 0; i < keys.size(); i++) {
-		const String &name = keys[i];
-		String v = String(p_vars[name]);
+		const Variant &key_v = keys[i];
+		String name = String(key_v);
+		String v = String(p_vars[key_v]);
 		raw_by_var[name] = v;
 
 		bool need_interp = interp_set_ptr && interp_set_ptr->has(name);
@@ -59,7 +61,7 @@ void MmoInterpEngine::apply_sync(const String &p_uid, const Dictionary &p_vars, 
 		if (!st_ptr) {
 			// 首次收到：snap
 			by_var.insert(name, InterpState{ num_v, num_v });
-		} else if (Math::abs(num_v - st_ptr->current) >= TELEPORT_THRESHOLD) {
+		} else if (std::abs(num_v - st_ptr->current) >= TELEPORT_THRESHOLD) {
 			// 瞬移检测：snap
 			*st_ptr = InterpState{ num_v, num_v };
 		} else {
@@ -77,7 +79,7 @@ TypedArray<Dictionary> MmoInterpEngine::tick(double p_delta_seconds) {
 
 	double dt_ms = p_delta_seconds * 1000.0;
 	// 帧率无关平滑因子
-	double base_factor = 1.0 - Math::pow(1.0 - BASE_FACTOR, dt_ms / FRAME_REF_MS);
+	double base_factor = 1.0 - std::pow(1.0 - BASE_FACTOR, dt_ms / FRAME_REF_MS);
 
 	for (auto &uid_entry : state) {
 		const String &uid = uid_entry.key;
@@ -87,21 +89,21 @@ TypedArray<Dictionary> MmoInterpEngine::tick(double p_delta_seconds) {
 			InterpState &st = name_entry.value;
 			double diff = st.target - st.current;
 
-			if (Math::abs(diff) <= EPSILON) {
+			if (std::abs(diff) <= EPSILON) {
 				st.current = st.target;
 				continue;
 			}
 
 			// 动态追赶：偏差过大时提高因子
 			double factor = base_factor;
-			if (Math::abs(diff) > 50.0) {
-				factor = MIN(base_factor * (Math::abs(diff) / 50.0), 0.8);
+			if (std::abs(diff) > 50.0) {
+				factor = std::min(base_factor * (std::abs(diff) / 50.0), 0.8);
 			}
 
 			st.current += diff * factor;
 
 			// 脏检查：仅在变化显著时上报
-			if (Math::abs(diff * factor) > EPSILON) {
+			if (std::abs(diff * factor) > EPSILON) {
 				Dictionary c;
 				c["uid"] = uid;
 				c["var_name"] = name;
