@@ -13,6 +13,7 @@
 namespace godot {
 
 ShangCloudMMO::ShangCloudMMO() {
+	set_process(true);
 }
 
 ShangCloudMMO::~ShangCloudMMO() {
@@ -196,6 +197,7 @@ void ShangCloudMMO::connect_to_edge() {
 	ERR_FAIL_COND_MSG(edge_port <= 0, "edge_port must be set before connecting");
 	ERR_FAIL_COND_MSG(connect_key.is_empty(), "connect_key must be set before connecting");
 
+	set_process(true);
 	cleanup_transport();
 
 	if (protocol == PROTOCOL_TCP) {
