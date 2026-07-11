@@ -48,6 +48,9 @@ func _ready():
     mmo.connected.connect(_on_connected)
     mmo.disconnected.connect(_on_disconnected)
     mmo.message_received.connect(_on_message)
+    mmo.broadcast_received.connect(_on_broadcast)
+    mmo.sync_var_received.connect(_on_sync_var)
+    mmo.sync_var_interpolated.connect(_on_sync_var_interpolated)
     mmo.user_joined.connect(_on_user_joined)
     mmo.user_left.connect(_on_user_left)
     mmo.server_closed.connect(_on_server_closed)
@@ -58,14 +61,29 @@ func _ready():
 
 func _on_connected():
     print("已连接")
-    mmo.send_message(JSON.stringify({
-        "type": "__join__",
-        "uid": "player1",
-        "nickname": "玩家一号"
-    }))
+    # 连接成功后发送加入通知（封装版，等价于手动 JSON.stringify __join__）
+    mmo.send_join_announcement("player1", "玩家一号")
+
+    # 发送广播消息（封装版，wire 格式：{"uid","message","extra"}）
+    mmo.send_broadcast("player1", "hello", "")
+
+    # 发送同步变量（封装版，插帧列表 ["x"]）
+    var vars := {"x": str(position.x), "y": str(position.y)}
+    mmo.send_sync_var("player1", vars, PackedStringArray(["x", "y"]))
 
 func _on_message(message: String):
-    print("收到消息: ", message)
+    print("收到原始消息: ", message)
+
+func _on_broadcast(uid: String, message: String, extra: String):
+    print("收到广播: ", uid, " -> ", message, " (", extra, ")")
+
+func _on_sync_var(uid: String, vars: Dictionary, interp: PackedStringArray):
+    print("收到同步变量: ", uid, " vars=", vars, " interp=", interp)
+
+func _on_sync_var_interpolated(uid: String, var_name: String, value: float):
+    # 逐帧平滑推进，回写克隆体。如：
+    # if var_name == "x": clone.position.x = value
+    pass
 
 func _on_user_joined(uid: String, nickname: String):
     print(uid, " 加入了房间 (", nickname, ")")
@@ -100,8 +118,14 @@ func _on_error(error: String):
 |------|------|
 | `connect_to_edge()` | 建立连接（自动完成握手、密钥派生、认证） |
 | `disconnect_from_edge()` | 断开连接 |
-| `send_message(message: String)` | 发送文本消息（自动加密） |
+| `send_message(message: String)` | 发送文本消息（自动加密），原始字符串作为明文帧 |
 | `send_raw(data: PackedByteArray)` | 发送二进制数据（自动加密） |
+| `send_broadcast(uid, message, extra)` | 封装广播消息，wire：`{"uid","message","extra"}`（无 `type`） |
+| `send_sync_var(uid, vars: Dictionary, interp: PackedStringArray)` | 封装同步变量，wire：`{"type":"__sync_var__","uid","vars","interp"}` |
+| `send_join_announcement(uid, nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}` |
+| `get_sync_var(uid, name) -> float` | 读取插帧变量平滑后的当前值（移植自 core.js 的插帧引擎） |
+| `get_sync_var_raw(uid, name) -> String` | 读取同步变量原始值（不做插帧） |
+| `clear_sync_var_state(uid)` | 清理指定 uid 的插帧状态（玩家离开时调用） |
 | `get_state() -> ConnectionState` | 获取当前连接状态 |
 
 #### 信号
@@ -111,11 +135,23 @@ func _on_error(error: String):
 | `connected` | 无 | 认证成功，可以收发消息 |
 | `disconnected` | 无 | 连接已断开 |
 | `connection_error` | `error: String` | 连接或认证失败 |
-| `message_received` | `message: String` | 收到文本消息 |
+| `message_received` | `message: String` | 收到未识别为广播/同步变量的文本消息 |
 | `raw_message_received` | `data: PackedByteArray` | 收到二进制消息 |
+| `broadcast_received` | `uid, message, extra` | 收到广播消息（wire：`{"uid","message","extra"}`） |
+| `sync_var_received` | `uid, vars: Dictionary, interp: PackedStringArray` | 收到同步变量（wire：`__sync_var__`） |
+| `sync_var_interpolated` | `uid, var_name: String, value: float` | 插帧引擎逐帧推进时触发，回写克隆体即可 |
 | `user_joined` | `uid: String, nickname: String` | 有用户加入房间 |
 | `user_left` | `uid: String` | 有用户离开房间 |
 | `server_closed` | 无 | 服务端主动关闭连接 |
+
+#### 插帧引擎
+
+`sync_var_interpolated` 信号在每帧 `_process` 中触发，对应 core.js 的 `_ensureInterpLoop`：
+- 收到 `__sync_var__` 后，数值且在 `interp` 列表中的变量进入 `{current, target}` 状态
+- 首次收到与瞬移阈值（差值绝对值 ≥ 200）时直接 snap
+- 其余帧用帧率无关的指数平滑（基础因子 0.15，|diff|>50 时动态追赶，上限 0.8）把 current 逼近 target
+- 全部收敛后自动休眠；玩家离开时 `__leave__` 会自动清理其状态
+- 也可用 `get_sync_var(uid, name)` 在任意时刻读取平滑后的值
 
 #### 连接状态枚举
 
