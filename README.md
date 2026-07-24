@@ -1,4 +1,4 @@
-## ShangCloudMMO SDK for Godot
+﻿## ShangCloudMMO SDK for Godot
 
 基于 C++ GDExtension 的 ShangCloud MMO 实时传输 SDK，提供 AES-256-GCM 加密的 TCP/UDP 通信。
 
@@ -53,6 +53,7 @@ func _ready():
     mmo.sync_var_interpolated.connect(_on_sync_var_interpolated)
     mmo.user_joined.connect(_on_user_joined)
     mmo.user_left.connect(_on_user_left)
+    mmo.members_updated.connect(_on_members_updated)
     mmo.server_closed.connect(_on_server_closed)
     mmo.connection_error.connect(_on_error)
 
@@ -62,6 +63,7 @@ func _ready():
 func _on_connected():
     print("已连接")
     # 连接成功后发送加入通知（封装版，等价于手动 JSON.stringify __join__）
+    # 会自动把自己写入本地成员列表并发送 __ping__ 查询完整列表
     mmo.send_join_announcement("player1", "玩家一号")
 
     # 发送广播消息（封装版，wire 格式：{"uid","message","extra"}）
@@ -91,6 +93,12 @@ func _on_user_joined(uid: String, nickname: String):
 func _on_user_left(uid: String):
     print(uid, " 离开了房间")
 
+func _on_members_updated(user_count: int, members: Array):
+    # 收到 __pong__ 后触发；也可随时 mmo.get_member_list() 读取缓存
+    print("房间人数=", user_count, " 成员=", members)
+    for m in mmo.get_member_list():
+        print("  ", m["uid"], " | ", m["nickname"])
+
 func _on_server_closed():
     print("服务器关闭了连接")
 
@@ -101,6 +109,11 @@ func _on_error(error: String):
     printerr("连接错误: ", error)
 ```
 
+### 常见坑点
+- 如果你自己继承 `ShangCloudMMO` 写脚本，不要再定义 `_process()` 去覆盖父类网络轮询。父类的 TCP/UDP 握手、收包和心跳都依赖它；自定义同步逻辑请放到 `Timer` 或其他回调里。
+- 连接成功之前不要调用发送接口，`send_message` / `send_broadcast` / `send_sync_var` 都要求状态已经是 `STATE_CONNECTED`。
+- 测试房间使用 `connect_key = "shangcloud_mmo_test"`。这个密钥会直接进入同一个测试房间，不走主控验证。
+- `broadcast_received` 只会收到其他客户端发出的广播，发送者自己不会收到回显。
 ### API
 
 #### 属性
@@ -122,7 +135,10 @@ func _on_error(error: String):
 | `send_raw(data: PackedByteArray)` | 发送二进制数据（自动加密） |
 | `send_broadcast(uid, message, extra)` | 封装广播消息，wire：`{"uid","message","extra"}`（无 `type`） |
 | `send_sync_var(uid, vars: Dictionary, interp: PackedStringArray)` | 封装同步变量，wire：`{"type":"__sync_var__","uid","vars","interp"}` |
-| `send_join_announcement(uid, nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}` |
+| `send_join_announcement(uid, nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}`；同时写入本地成员缓存并发送 `__ping__` |
+| `query_members()` | 发送 `__ping__` 查询房间成员（服务端回 `__pong__:N:membersJSON`） |
+| `get_member_list() -> Array` | 本地缓存的成员列表 `[{uid, nickname}, ...]`（参考扩展 getMemberList） |
+| `get_room_user_count() -> int` | 最近一次 `__pong__` 的房间人数 |
 | `get_sync_var(uid, name) -> float` | 读取插帧变量平滑后的当前值（移植自 core.js 的插帧引擎） |
 | `get_sync_var_raw(uid, name) -> String` | 读取同步变量原始值（不做插帧） |
 | `clear_sync_var_state(uid)` | 清理指定 uid 的插帧状态（玩家离开时调用） |
@@ -142,6 +158,7 @@ func _on_error(error: String):
 | `sync_var_interpolated` | `uid, var_name: String, value: float` | 插帧引擎逐帧推进时触发，回写克隆体即可 |
 | `user_joined` | `uid: String, nickname: String` | 有用户加入房间 |
 | `user_left` | `uid: String` | 有用户离开房间 |
+| `members_updated` | `user_count: int, members: Array` | 收到 `__pong__` 后成员列表更新 |
 | `server_closed` | 无 | 服务端主动关闭连接 |
 
 #### 插帧引擎
@@ -191,3 +208,4 @@ scons platform=macos target=template_debug      # macOS
 ### 许可证
 
 MIT License
+

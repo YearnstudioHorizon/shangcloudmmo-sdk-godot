@@ -52,6 +52,9 @@ void ShangCloudMMO::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("send_broadcast", "uid", "message", "extra"), &ShangCloudMMO::send_broadcast);
 	ClassDB::bind_method(D_METHOD("send_sync_var", "uid", "vars", "interp"), &ShangCloudMMO::send_sync_var);
 	ClassDB::bind_method(D_METHOD("send_join_announcement", "uid", "nickname"), &ShangCloudMMO::send_join_announcement);
+	ClassDB::bind_method(D_METHOD("query_members"), &ShangCloudMMO::query_members);
+	ClassDB::bind_method(D_METHOD("get_member_list"), &ShangCloudMMO::get_member_list);
+	ClassDB::bind_method(D_METHOD("get_room_user_count"), &ShangCloudMMO::get_room_user_count);
 	ClassDB::bind_method(D_METHOD("get_sync_var", "uid", "name"), &ShangCloudMMO::get_sync_var);
 	ClassDB::bind_method(D_METHOD("get_sync_var_raw", "uid", "name"), &ShangCloudMMO::get_sync_var_raw);
 	ClassDB::bind_method(D_METHOD("clear_sync_var_state", "uid"), &ShangCloudMMO::clear_sync_var_state);
@@ -95,6 +98,9 @@ void ShangCloudMMO::_bind_methods() {
 			PropertyInfo(Variant::STRING, "nickname")));
 	ADD_SIGNAL(MethodInfo("user_left",
 			PropertyInfo(Variant::STRING, "uid")));
+	ADD_SIGNAL(MethodInfo("members_updated",
+			PropertyInfo(Variant::INT, "user_count"),
+			PropertyInfo(Variant::ARRAY, "members")));
 	ADD_SIGNAL(MethodInfo("server_closed"));
 }
 
@@ -216,6 +222,7 @@ void ShangCloudMMO::disconnect_from_edge() {
 		transport->disconnect();
 	}
 	interp_engine.clear();
+	clear_members();
 }
 
 double ShangCloudMMO::get_sync_var(const String &p_uid, const String &p_name) const {
@@ -289,6 +296,29 @@ void ShangCloudMMO::send_join_announcement(const String &p_uid, const String &p_
 	dict["uid"] = p_uid;
 	dict["nickname"] = p_nickname;
 	send_message(JSON::stringify(dict));
+
+	// 立即将自己加入本地成员列表（参考 extension wasm，无需等待 __pong__）
+	upsert_member(p_uid, p_nickname);
+	// 主动查询完整成员列表
+	query_members();
+}
+
+void ShangCloudMMO::query_members() {
+	ERR_FAIL_COND_MSG(!transport || transport->get_state() != MMOTransport::STATE_CONNECTED,
+			"Cannot query members: not connected");
+	send_message("__ping__");
+}
+
+Array ShangCloudMMO::get_member_list() const {
+	// Array 写时复制，按值返回即可得到快照
+	return members;
+}
+
+int ShangCloudMMO::get_room_user_count() const {
+	if (room_user_count > 0) {
+		return room_user_count;
+	}
+	return members.size();
 }
 
 // Transport listener callbacks
@@ -298,6 +328,7 @@ void ShangCloudMMO::on_transport_connected() {
 }
 
 void ShangCloudMMO::on_transport_disconnected() {
+	clear_members();
 	emit_signal("disconnected");
 }
 
@@ -319,7 +350,89 @@ void ShangCloudMMO::cleanup_transport() {
 	}
 }
 
+void ShangCloudMMO::clear_members() {
+	members.clear();
+	room_user_count = 0;
+}
+
+void ShangCloudMMO::upsert_member(const String &p_uid, const String &p_nickname) {
+	if (p_uid.is_empty()) {
+		return;
+	}
+	for (int i = 0; i < members.size(); i++) {
+		Dictionary m = members[i];
+		if (String(m.get("uid", "")) == p_uid) {
+			m["nickname"] = p_nickname;
+			members[i] = m;
+			return;
+		}
+	}
+	Dictionary entry;
+	entry["uid"] = p_uid;
+	entry["nickname"] = p_nickname;
+	members.push_back(entry);
+}
+
+void ShangCloudMMO::remove_member(const String &p_uid) {
+	for (int i = members.size() - 1; i >= 0; i--) {
+		Dictionary m = members[i];
+		if (String(m.get("uid", "")) == p_uid) {
+			members.remove_at(i);
+		}
+	}
+}
+
+void ShangCloudMMO::apply_members_from_pong(const String &p_members_json, int p_count) {
+	if (!p_members_json.is_empty() && p_members_json != "null") {
+		Ref<JSON> json;
+		json.instantiate();
+		if (json->parse(p_members_json) == OK) {
+			Variant data = json->get_data();
+			if (data.get_type() == Variant::ARRAY) {
+				Array arr = data;
+				Array next;
+				for (int i = 0; i < arr.size(); i++) {
+					if (arr[i].get_type() != Variant::DICTIONARY) {
+						continue;
+					}
+					Dictionary src = arr[i];
+					Dictionary entry;
+					entry["uid"] = String(src.get("uid", ""));
+					entry["nickname"] = String(src.get("nickname", ""));
+					if (!String(entry["uid"]).is_empty()) {
+						next.push_back(entry);
+					}
+				}
+				members = next;
+			}
+		}
+	}
+	room_user_count = p_count > 0 ? p_count : members.size();
+	emit_signal("members_updated", room_user_count, members);
+}
+
 void ShangCloudMMO::process_business_message(const String &p_message) {
+	// __pong__:<人数>:<成员JSON> —— 房间成员查询响应（参考 extension wasm）
+	if (p_message.begins_with("__pong__")) {
+		// 手动拆分，避免依赖 String::split 的 maxsplit 签名差异
+		String rest = p_message.substr(8); // skip "__pong__"
+		if (rest.begins_with(":")) {
+			rest = rest.substr(1);
+		}
+		int colon = rest.find(":");
+		String count_str;
+		String members_json;
+		if (colon >= 0) {
+			count_str = rest.substr(0, colon);
+			members_json = rest.substr(colon + 1);
+		} else {
+			count_str = rest;
+		}
+		int count = count_str.to_int();
+		apply_members_from_pong(members_json, count);
+		return;
+	}
+
 	// Parse JSON business messages（__join__/__leave__/__sync_var__ 以及广播消息）
 	if (p_message.begins_with("{")) {
 		Ref<JSON> json;
@@ -334,11 +447,13 @@ void ShangCloudMMO::process_business_message(const String &p_message) {
 				if (type == "__join__") {
 					String uid = dict.get("uid", "");
 					String nickname = dict.get("nickname", "");
+					upsert_member(uid, nickname);
 					emit_signal("user_joined", uid, nickname);
 					return;
 				}
 				if (type == "__leave__") {
 					String uid = dict.get("uid", "");
+					remove_member(uid);
 					interp_engine.clear_uid(uid);
 					emit_signal("user_left", uid);
 					return;

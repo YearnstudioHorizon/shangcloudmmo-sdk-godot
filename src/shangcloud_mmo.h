@@ -57,6 +57,13 @@ public:
 	// 高级封装：发送加入房间通知（wire 格式：{"type":"__join__","uid","nickname"}）
 	void send_join_announcement(const String &p_uid, const String &p_nickname);
 
+	// 查询房间成员：发送 __ping__，服务端以 __pong__:N:membersJSON 响应并更新本地缓存
+	void query_members();
+	// 返回本地缓存的成员列表（Array[{uid, nickname}]，参考扩展 getMemberList）
+	Array get_member_list() const;
+	// 返回最近一次 __pong__ 的房间人数（无缓存时为成员列表长度）
+	int get_room_user_count() const;
+
 	// 插帧读取：返回 uid 的同步变量平滑后的 current 值；未插帧时回退到最近原始值
 	double get_sync_var(const String &p_uid, const String &p_name) const;
 	// 插帧读取：返回 uid 的同步变量原始字符串值（不做插帧）
@@ -83,8 +90,16 @@ private:
 	MMOMessageQueue message_queue;
 	MmoInterpEngine interp_engine;
 
+	// 房间成员缓存（参考 extension 的 window._mmoMembers）
+	Array members;
+	int room_user_count = 0;
+
 	void cleanup_transport();
 	void process_business_message(const String &p_message);
+	void clear_members();
+	void upsert_member(const String &p_uid, const String &p_nickname);
+	void remove_member(const String &p_uid);
+	void apply_members_from_pong(const String &p_members_json, int p_count);
 };
 
 } // namespace godot
