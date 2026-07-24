@@ -1,4 +1,5 @@
 #include "register_types.h"
+#include "shangcloud_api_client.h"
 #include "shangcloud_mmo.h"
 
 using namespace godot;
@@ -8,6 +9,7 @@ void initialize_shangcloud_mmo_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(ShangCloudMMO);
+	GDREGISTER_CLASS(ShangCloudApiClient);
 }
 
 void uninitialize_shangcloud_mmo_module(ModuleInitializationLevel p_level) {

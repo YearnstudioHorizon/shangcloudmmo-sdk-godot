@@ -2,7 +2,10 @@
 
 基于 C++ GDExtension 的 ShangCloud MMO 实时传输 SDK，提供 AES-256-GCM 加密的 TCP/UDP 通信。
 
-该 SDK 仅负责建立与边缘节点的加密连接、收发消息。获取 `connect_key` 等房间信息需通过 `shangcloud-sdk` 系列 HTTP SDK 完成。
+该 SDK 提供：
+
+1. **`ShangCloudMMO`**：与边缘节点的 AES-256-GCM 加密实时通信（TCP/UDP）
+2. **`ShangCloudApiClient`**：主控 HTTP API（房间管理）+ **设备授权登录**（Device Auth + PKCE，免 Secret）
 
 ### 获取链接库
 
@@ -107,6 +110,124 @@ func _on_disconnected():
 
 func _on_error(error: String):
     printerr("连接错误: ", error)
+```
+
+### 设备授权登录（Device Auth + PKCE，免 Secret）
+
+适用于无法安全保存 `client_secret` 的客户端。需在开发者中心开启应用的 **「允许公开客户端 PKCE」**。
+
+在场景中添加 `ShangCloudApiClient` 节点：
+
+```gdscript
+@onready var api: ShangCloudApiClient = $ShangCloudApiClient
+
+func _ready():
+    api.base_url = "https://api.yearnstudio.cn"
+    api.client_id = "your_client_id"
+
+    api.device_auth_started.connect(_on_device_auth_started)
+    api.device_auth_completed.connect(_on_device_auth_completed)
+    api.device_auth_failed.connect(_on_device_auth_failed)
+    api.device_auth_pending.connect(func(): print("等待用户授权..."))
+
+    # scope 传 "" 则默认 openid profile mmo
+    api.login_with_device_auth("your_client_id", "openid profile mmo")
+
+func _on_device_auth_started(user_code: String, verification_uri: String,
+        verification_uri_complete: String, device_code: String, code_verifier: String):
+    print("请在浏览器打开: ", verification_uri_complete)
+    print("或访问 ", verification_uri, " 并输入: ", user_code)
+    OS.shell_open(verification_uri_complete)
+    # device_code / code_verifier 仅保存在内存，勿写入日志
+
+func _on_device_auth_completed(token: Dictionary):
+    print("登录成功, expires_in=", token.get("expires_in", 0))
+    # access_token / refresh_token 已写入 api.access_token / api.refresh_token
+    api.new_room("tcp")
+
+func _on_device_auth_failed(error: String):
+    printerr("登录失败: ", error)
+
+# 刷新令牌（公开客户端，仅 client_id）
+# api.refresh_access_token("", "")  # 使用已保存的 refresh_token / client_id
+# api.token_refreshed.connect(func(t): print("refreshed"))
+```
+
+文档：https://doc.yearnstudio.cn/doc-9232484
+
+### MMO 房间 OpenAPI（`ShangCloudApiClient`）
+
+鉴权：`Authorization: {token_type} {access_token}`，token 须含 `mmo` scope。  
+协议头：`X-MMO-Protoctl`（`tcp` / `websocket`）。房间头：`X-MMO-Room`。
+
+| 方法 | 路径 | SDK 方法 | 说明 |
+|------|------|----------|------|
+| POST | `/api/mmo/room/new` | `new_room(protocol)` | 创建房间，调用者成为房主 |
+| POST | `/api/mmo/room/join` | `join_room(room_id, protocol)` | 加入房间，每次独立 `connect_key` |
+| POST | `/api/mmo/room/data/set` | `set_room_data(room_id, key, value, type)` | 设置额外数据（仅房主） |
+| POST | `/api/mmo/room/data/get` | `get_room_data(room_id)` | 获取全部额外数据 |
+| POST | `/api/mmo/room/data/delete` | `delete_room_data(room_id, key)` | 删除指定键（仅房主） |
+| POST | `/api/mmo/room/kick` | `kick_user(room_id, target_uid)` | 踢人（仅房主，不能踢自己） |
+| POST | `/api/mmo/room/usercount` | `get_room_user_count(room_id)` | 查询当前人数 |
+
+另：`set_room_config(room_id, allow_multi_login)` → `POST /api/mmo/room/config`。
+
+结果通过信号返回：
+
+| 信号 | 参数 | 说明 |
+|------|------|------|
+| `api_success` | `path: String`, `data: Dictionary` | HTTP 2xx，`data` 为 JSON 对象 |
+| `api_failed` | `path: String`, `error: String` | 失败（含 400/401/403/404） |
+
+文档：创建 [475695436](https://doc.yearnstudio.cn/api-475695436) · 加入 [475695437](https://doc.yearnstudio.cn/api-475695437) · 设数据 [475695439](https://doc.yearnstudio.cn/api-475695439) · 取数据 [475695440](https://doc.yearnstudio.cn/api-475695440) · 删数据 [475695441](https://doc.yearnstudio.cn/api-475695441) · 踢人 [475695442](https://doc.yearnstudio.cn/api-475695442) · 人数 [475695443](https://doc.yearnstudio.cn/api-475695443)
+
+```gdscript
+@onready var api: ShangCloudApiClient = $ShangCloudApiClient
+@onready var mmo: ShangCloudMMO = $ShangCloudMMO
+
+func _ready():
+    api.access_token = "your_access_token"
+    api.token_type = "Bearer"
+    api.api_success.connect(_on_api_success)
+    api.api_failed.connect(func(path, err): printerr(path, " ", err))
+
+    # 1) 创建房间（protocol: "tcp" / "websocket"）
+    api.new_room("tcp")
+
+func _on_api_success(path: String, data: Dictionary):
+    if data.has("connect_key") and data.has("edge_url"):
+        # new / join 成功
+        var room_id: String = data.get("room_id", "")
+        var assigned_uid: String = data.get("assigned_uid", "")  # 一号多登时才有
+        print("room=", room_id, " assigned_uid=", assigned_uid)
+
+        mmo.connect_key = data["connect_key"]
+        # 自行解析 edge_url 填 edge_host / edge_port，或拆分 "host:port"
+        var edge: String = data["edge_url"]
+        # 例：tcp://host:port 或 host:port
+        mmo.connect_to_edge()
+
+        # 2) 房间额外数据（仅房主；type: number/string/boolean）
+        api.set_room_data(room_id, "max_players", "8", "number")
+        api.get_room_data(room_id)
+        # api.delete_room_data(room_id, "max_players")
+
+        # 3) 踢人 + 查人数
+        # api.kick_user(room_id, "12345")
+        # api.get_room_user_count(room_id)
+        return
+
+    if data.has("extra_data"):
+        print("room data: ", data["extra_data"])
+        return
+    if data.has("user_count"):
+        print("user_count=", data["user_count"])
+        return
+    if data.get("status", "") == "ok":
+        print("ok: ", path)
+
+# 加入已有房间
+# api.join_room("550e8400-e29b-41d4-a716-446655440000", "websocket")
 ```
 
 ### 常见坑点
