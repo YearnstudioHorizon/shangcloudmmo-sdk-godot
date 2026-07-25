@@ -42,10 +42,13 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Avoid ANSI color codes so version parsing is reliable.
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
         run: |
           set -euo pipefail
           # semantic-release dry-run prints the next version when a release is due.
-          # Capture full log; exit code is 0 even when no release is needed.
+          # Exit code is 0 even when no release is needed.
           set +e
           OUT=$(npx semantic-release --dry-run 2>&1)
           CODE=$?
@@ -57,9 +60,24 @@ jobs:
             exit "$CODE"
           fi
 
+          # Strip ANSI escapes (in case a plugin still emits color).
+          CLEAN=$(printf '%s\n' "$OUT" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')
+
           VERSION=""
-          if echo "$OUT" | grep -Eq 'The next release version is'; then
-            VERSION=$(echo "$OUT" | sed -n 's/.*The next release version is \([0-9][0-9.]*\).*/\1/p' | head -n1)
+          # First release: "There is no previous release, the next release version is 1.0.0"
+          # Subsequent:     "The next release version is 1.2.3"
+          if printf '%s\n' "$CLEAN" | grep -Eq 'next release version is [0-9]'; then
+            VERSION=$(printf '%s\n' "$CLEAN" \
+              | grep -Eo 'next release version is [0-9]+\.[0-9]+\.[0-9]+' \
+              | head -n1 \
+              | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+$')
+          fi
+          # Fallback: dry-run success line "Published release 1.0.0 on default channel"
+          if [[ -z "$VERSION" ]]; then
+            VERSION=$(printf '%s\n' "$CLEAN" \
+              | grep -Eo 'Published release [0-9]+\.[0-9]+\.[0-9]+' \
+              | head -n1 \
+              | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+$' || true)
           fi
 
           if [[ -n "$VERSION" ]]; then
