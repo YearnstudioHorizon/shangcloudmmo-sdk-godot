@@ -1,10 +1,18 @@
 # SCons
 .sconsign.dblite
+.scons-cache/
 *.os
 *.o
 
 # Build output
 bin/
+dist/
+.release-staging/
+artifacts/
+
+# Node (semantic-release)
+node_modules/
+package-lock.json
 
 # Generated
 src/gen/

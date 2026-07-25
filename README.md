@@ -9,7 +9,21 @@
 
 ### 获取链接库
 
-前往 `GitHub Actions` 下载对应平台的构建产物（Windows / Linux / macOS）。
+推荐从 [GitHub Releases](https://github.com/YearnstudioHorizon/shangcloudmmo-sdk-godot/releases) 下载预编译产物。
+
+- 按平台：`shangcloud-mmo-windows-x86_64.zip` / `linux` / `macos`
+- 全平台：`shangcloud-mmo-all.zip`（含 `shangcloud_mmo.gdextension` + `bin/`）
+
+推送到 `main` 且 commit 符合 [Conventional Commits](https://www.conventionalcommits.org/) 时会自动发版：
+
+| commit 类型 | 版本变化 |
+| --- | --- |
+| `feat:` | minor（`1.2.0` → `1.3.0`） |
+| `fix:` / `perf:` / `refactor:` | patch（`1.2.0` → `1.2.1`） |
+| `BREAKING CHANGE:` / `feat!:` | major（`1.2.0` → `2.0.0`） |
+| `docs:` / `chore:` / `ci:` / `test:` | 不发版 |
+
+也可在 `GitHub Actions` 的构建流水线中下载中间产物。
 
 ### 集成到 Godot 项目
 

@@ -1,0 +1,55 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "type": "docs", "release": false },
+          { "type": "chore", "release": false },
+          { "type": "ci", "release": false },
+          { "type": "test", "release": false },
+          { "type": "build", "release": false },
+          { "breaking": true, "release": "major" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "dist/shangcloud-mmo-windows-x86_64.zip",
+            "label": "Windows x86_64 (debug + release)"
+          },
+          {
+            "path": "dist/shangcloud-mmo-linux-x86_64.zip",
+            "label": "Linux x86_64 (debug + release)"
+          },
+          {
+            "path": "dist/shangcloud-mmo-macos-universal.zip",
+            "label": "macOS universal (debug + release)"
+          },
+          {
+            "path": "dist/shangcloud-mmo-all.zip",
+            "label": "All platforms + .gdextension"
+          }
+        ],
+        "successComment": false,
+        "failTitle": false
+      }
+    ]
+  ]
+}

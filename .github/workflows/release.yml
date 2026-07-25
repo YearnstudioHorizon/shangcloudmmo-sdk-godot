@@ -1,0 +1,218 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+env:
+  CACHE_VERSION: v1
+  SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
+
+jobs:
+  # Dry-run semantic-release: skip expensive builds when no version bump.
+  analyze:
+    name: Analyze commits
+    runs-on: ubuntu-latest
+    outputs:
+      new_release: ${{ steps.check.outputs.new_release }}
+      new_version: ${{ steps.check.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-fund --no-audit
+
+      - name: Dry-run semantic-release
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # semantic-release dry-run prints the next version when a release is due.
+          # Capture full log; exit code is 0 even when no release is needed.
+          set +e
+          OUT=$(npx semantic-release --dry-run 2>&1)
+          CODE=$?
+          set -e
+          echo "$OUT"
+
+          if [[ $CODE -ne 0 ]]; then
+            echo "semantic-release dry-run failed with exit $CODE" >&2
+            exit "$CODE"
+          fi
+
+          VERSION=""
+          if echo "$OUT" | grep -Eq 'The next release version is'; then
+            VERSION=$(echo "$OUT" | sed -n 's/.*The next release version is \([0-9][0-9.]*\).*/\1/p' | head -n1)
+          fi
+
+          if [[ -n "$VERSION" ]]; then
+            echo "new_release=true" >> "$GITHUB_OUTPUT"
+            echo "new_version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Will release v$VERSION"
+          else
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+            echo "No release needed"
+          fi
+
+  build:
+    name: ${{ matrix.platform }} / ${{ matrix.target }}
+    needs: analyze
+    if: needs.analyze.outputs.new_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [template_debug, template_release]
+        platform: [windows, linux, macos]
+        include:
+          - platform: windows
+            os: windows-latest
+            arch: x86_64
+            cache-name: windows-x86_64
+          - platform: linux
+            os: ubuntu-latest
+            arch: x86_64
+            cache-name: linux-x86_64
+          - platform: macos
+            os: macos-latest
+            arch: universal
+            cache-name: macos-universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install SCons
+        run: pip install scons
+
+      - name: Restore SCons cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-${{ hashFiles('SConstruct', 'src/**', 'thirdparty/mbedtls/library/*.c', 'thirdparty/mbedtls/include/**/*.h', 'godot-cpp/gdextension/extension_api.json', 'godot-cpp/tools/**') }}-${{ github.sha }}
+          restore-keys: |
+            scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-
+            scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-
+
+      - name: Detect job count
+        shell: bash
+        run: |
+          if command -v nproc >/dev/null 2>&1; then
+            JOBS=$(nproc)
+          elif command -v sysctl >/dev/null 2>&1; then
+            JOBS=$(sysctl -n hw.ncpu)
+          else
+            JOBS=${NUMBER_OF_PROCESSORS:-4}
+          fi
+          echo "NUM_JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "Using $JOBS parallel jobs"
+
+      - name: Build
+        shell: bash
+        run: |
+          scons platform=${{ matrix.platform }} target=${{ matrix.target }} arch=${{ matrix.arch }} -j"${NUM_JOBS}"
+
+      - name: Save SCons cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-${{ hashFiles('SConstruct', 'src/**', 'thirdparty/mbedtls/library/*.c', 'thirdparty/mbedtls/include/**/*.h', 'godot-cpp/gdextension/extension_api.json', 'godot-cpp/tools/**') }}-${{ github.sha }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target }}
+          path: bin/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [analyze, build]
+    if: needs.analyze.outputs.new_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download Windows debug
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x86_64-template_debug
+          path: artifacts/windows
+
+      - name: Download Windows release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x86_64-template_release
+          path: artifacts/windows
+
+      - name: Download Linux debug
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux-x86_64-template_debug
+          path: artifacts/linux
+
+      - name: Download Linux release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-linux-x86_64-template_release
+          path: artifacts/linux
+
+      - name: Download macOS debug
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos-universal-template_debug
+          path: artifacts/macos
+
+      - name: Download macOS release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos-universal-template_release
+          path: artifacts/macos
+
+      - name: Package release assets
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip
+          chmod +x .github/scripts/package-release.sh
+          .github/scripts/package-release.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-fund --no-audit
+
+      - name: Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release

@@ -1,49 +1,131 @@
 name: Build GDExtension
 
 on:
+  # main 发版由 release.yml 负责，避免与 Release 流水线重复编译
   push:
-    branches: ["*"]
+    branches-ignore: [main]
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Bump to force a clean SCons cache rebuild.
+  CACHE_VERSION: v1
+  SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
+
 jobs:
   build:
+    name: ${{ matrix.platform }} / ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
+        target: [template_debug, template_release]
+        platform: [windows, linux, macos]
         include:
           - platform: windows
             os: windows-latest
             arch: x86_64
+            cache-name: windows-x86_64
           - platform: linux
             os: ubuntu-latest
             arch: x86_64
+            cache-name: linux-x86_64
           - platform: macos
             os: macos-latest
             arch: universal
+            cache-name: macos-universal
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install SCons
         run: pip install scons
 
-      - name: Build debug
-        run: scons platform=${{ matrix.platform }} target=template_debug arch=${{ matrix.arch }} -j4
+      - name: Restore SCons cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-${{ hashFiles('SConstruct', 'src/**', 'thirdparty/mbedtls/library/*.c', 'thirdparty/mbedtls/include/**/*.h', 'godot-cpp/gdextension/extension_api.json', 'godot-cpp/tools/**') }}-${{ github.sha }}
+          restore-keys: |
+            scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-
+            scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-
 
-      - name: Build release
-        run: scons platform=${{ matrix.platform }} target=template_release arch=${{ matrix.arch }} -j4
+      - name: Detect job count
+        shell: bash
+        run: |
+          if command -v nproc >/dev/null 2>&1; then
+            JOBS=$(nproc)
+          elif command -v sysctl >/dev/null 2>&1; then
+            JOBS=$(sysctl -n hw.ncpu)
+          else
+            JOBS=${NUMBER_OF_PROCESSORS:-4}
+          fi
+          echo "NUM_JOBS=$JOBS" >> "$GITHUB_ENV"
+          echo "Using $JOBS parallel jobs"
+
+      - name: Build
+        shell: bash
+        run: |
+          scons platform=${{ matrix.platform }} target=${{ matrix.target }} arch=${{ matrix.arch }} -j"${NUM_JOBS}"
+
+      - name: Save SCons cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-${{ env.CACHE_VERSION }}-${{ matrix.cache-name }}-${{ matrix.target }}-${{ hashFiles('SConstruct', 'src/**', 'thirdparty/mbedtls/library/*.c', 'thirdparty/mbedtls/include/**/*.h', 'godot-cpp/gdextension/extension_api.json', 'godot-cpp/tools/**') }}-${{ github.sha }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: shangcloud-mmo-${{ matrix.platform }}-${{ matrix.arch }}
+          name: shangcloud-mmo-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target }}
           path: bin/
           if-no-files-found: error
+          retention-days: 14
+
+  # Merge debug+release artifacts per platform so download stays simple.
+  package:
+    name: package / ${{ matrix.platform }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: windows
+            arch: x86_64
+          - platform: linux
+            arch: x86_64
+          - platform: macos
+            arch: universal
+    steps:
+      - name: Download debug
+        uses: actions/download-artifact@v4
+        with:
+          name: shangcloud-mmo-${{ matrix.platform }}-${{ matrix.arch }}-template_debug
+          path: out/
+
+      - name: Download release
+        uses: actions/download-artifact@v4
+        with:
+          name: shangcloud-mmo-${{ matrix.platform }}-${{ matrix.arch }}-template_release
+          path: out/
+
+      - name: Upload combined
+        uses: actions/upload-artifact@v4
+        with:
+          name: shangcloud-mmo-${{ matrix.platform }}-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
