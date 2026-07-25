@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/http_client.hpp>
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 
 namespace godot {
@@ -80,8 +81,10 @@ private:
 	PackedStringArray pending_headers;
 	bool request_sent = false;
 	bool response_received = false;
-	String response_body;
+	bool body_reading = false;
+	PackedByteArray response_body_bytes;
 	int response_code = 0;
+	int64_t expected_body_length = -1;
 
 	// Device login state
 	bool device_login_active = false;

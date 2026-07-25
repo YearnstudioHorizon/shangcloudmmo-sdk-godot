@@ -368,8 +368,10 @@ void ShangCloudApiClient::start_request(PendingKind p_kind, const String &p_path
 	pending_headers = p_headers;
 	request_sent = false;
 	response_received = false;
-	response_body = "";
+	body_reading = false;
+	response_body_bytes.clear();
 	response_code = 0;
+	expected_body_length = -1;
 
 	http.instantiate();
 	Error err;
@@ -403,6 +405,7 @@ void ShangCloudApiClient::poll_http() {
 		return;
 	}
 
+	// Drive the socket / TLS / HTTP state machine.
 	http->poll();
 	HTTPClient::Status status = http->get_status();
 
@@ -416,7 +419,7 @@ void ShangCloudApiClient::poll_http() {
 		return;
 	}
 
-	// Send request once the TCP/TLS socket is ready.
+	// Send once the TCP/TLS socket is ready. Do NOT treat this CONNECTED as "response done".
 	if (status == HTTPClient::STATUS_CONNECTED && !request_sent) {
 		Error err = http->request(HTTPClient::METHOD_POST, pending_path, pending_headers, pending_body);
 		request_sent = true;
@@ -430,68 +433,73 @@ void ShangCloudApiClient::poll_http() {
 		return;
 	}
 
-	// Read response body while available. Keep draining in one poll if data is ready.
-	if (status == HTTPClient::STATUS_BODY || (request_sent && http->has_response() && status == HTTPClient::STATUS_CONNECTED && !response_received)) {
-		if (http->has_response()) {
+	// Capture headers as soon as they are available (usually when entering STATUS_BODY).
+	if (http->has_response()) {
+		if (!response_received) {
 			response_received = true;
-			if (response_code == 0) {
-				response_code = http->get_response_code();
-			}
+			response_code = http->get_response_code();
+			expected_body_length = http->get_response_body_length(); // -1 if chunked/unknown
 		}
-		// Drain as much as possible this frame.
-		int safety = 0;
-		while (http->get_status() == HTTPClient::STATUS_BODY && safety < 256) {
-			++safety;
-			PackedByteArray chunk = http->read_response_body_chunk();
-			if (chunk.size() == 0) {
+
+		// Read body while the client reports STATUS_BODY. Keep polling within the frame
+		// so small JSON payloads are fully drained before keep-alive returns to CONNECTED.
+		for (int i = 0; i < 128; i++) {
+			status = http->get_status();
+			if (status != HTTPClient::STATUS_BODY) {
 				break;
 			}
-			response_body += String::utf8((const char *)chunk.ptr(), chunk.size());
-		}
-		// Body may still be streaming; wait for CONNECTED/DISCONNECTED after full read.
-		status = http->get_status();
-		if (status == HTTPClient::STATUS_BODY) {
-			return;
+			body_reading = true;
+			PackedByteArray chunk = http->read_response_body_chunk();
+			if (chunk.size() == 0) {
+				// Need another poll() for more data.
+				http->poll();
+				if (http->get_status() != HTTPClient::STATUS_BODY) {
+					break;
+				}
+				chunk = http->read_response_body_chunk();
+				if (chunk.size() == 0) {
+					break;
+				}
+			}
+			response_body_bytes.append_array(chunk);
+			if (expected_body_length >= 0 && response_body_bytes.size() >= expected_body_length) {
+				break;
+			}
 		}
 	}
 
-	// After the request was sent, CONNECTED without headers means "still waiting" (not finished).
-	// Previously this path finished immediately with an empty body and fake HTTP 200, which
-	// produced "Invalid device_authorization response".
-	if (request_sent && (status == HTTPClient::STATUS_CONNECTED || status == HTTPClient::STATUS_DISCONNECTED)) {
-		if (!response_received && !http->has_response()) {
-			// Request in flight; headers/body not yet available.
-			return;
-		}
+	status = http->get_status();
 
-		if (http->has_response()) {
-			response_received = true;
-			if (response_code == 0) {
-				response_code = http->get_response_code();
-			}
-		}
+	const bool length_done = expected_body_length >= 0 && response_body_bytes.size() >= expected_body_length;
+	// Empty-body responses never enter a useful BODY loop; treat Content-Length 0 as done.
+	const bool empty_body_done = response_received && expected_body_length == 0;
+	// After full body read, keep-alive clients return to CONNECTED; closed sockets DISCONNECT.
+	const bool stream_done = response_received && body_reading &&
+			(status == HTTPClient::STATUS_CONNECTED || status == HTTPClient::STATUS_DISCONNECTED);
+	// Chunked / unknown length: only finish after we have entered BODY and left it.
+	const bool unknown_len_done = response_received && expected_body_length < 0 && body_reading &&
+			(status == HTTPClient::STATUS_CONNECTED || status == HTTPClient::STATUS_DISCONNECTED);
 
-		// Drain any leftover body chunks.
-		int safety = 0;
-		while (http->get_status() == HTTPClient::STATUS_BODY && safety < 256) {
-			++safety;
+	if (response_received && (length_done || empty_body_done || stream_done || unknown_len_done)) {
+		// Final drain in case trailing bytes remain.
+		for (int i = 0; i < 32 && http->get_status() == HTTPClient::STATUS_BODY; i++) {
 			http->poll();
 			PackedByteArray chunk = http->read_response_body_chunk();
 			if (chunk.size() == 0) {
 				break;
 			}
-			response_body += String::utf8((const char *)chunk.ptr(), chunk.size());
+			response_body_bytes.append_array(chunk);
 		}
+		String body;
+		if (response_body_bytes.size() > 0) {
+			body = String::utf8((const char *)response_body_bytes.ptr(), response_body_bytes.size());
+		}
+		finish_request(response_code == 0 ? 200 : response_code, body);
+		return;
+	}
 
-		if (response_code == 0) {
-			// Disconnected without a usable status code.
-			if (status == HTTPClient::STATUS_DISCONNECTED && response_body.is_empty()) {
-				fail_request("Disconnected before response");
-				return;
-			}
-			response_code = 200;
-		}
-		finish_request(response_code, response_body);
+	if (request_sent && status == HTTPClient::STATUS_DISCONNECTED && !response_received) {
+		fail_request("Disconnected before response");
 	}
 }
 
@@ -651,8 +659,10 @@ void ShangCloudApiClient::clear_http() {
 	}
 	request_sent = false;
 	response_received = false;
-	response_body = "";
+	body_reading = false;
+	response_body_bytes.clear();
 	response_code = 0;
+	expected_body_length = -1;
 }
 
 } // namespace godot
