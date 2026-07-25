@@ -9,7 +9,7 @@
 
 ### 获取链接库
 
-推荐从 [GitHub Releases](https://github.com/YearnstudioHorizon/shangcloudmmo-sdk-godot/releases) 下载预编译产物。
+推荐从 [GitHub Releases](https://github.com/ShangCloudDev/shangcloudmmo-sdk-godot/releases) 下载预编译产物。
 
 - 按平台：`shangcloud-mmo-windows-x86_64.zip` / `linux` / `macos`
 - 全平台：`shangcloud-mmo-all.zip`（含 `shangcloud_mmo.gdextension` + `bin/`）

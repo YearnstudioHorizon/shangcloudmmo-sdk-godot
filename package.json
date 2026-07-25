@@ -5,7 +5,7 @@
   "description": "ShangCloudMMO SDK for Godot (GDExtension)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YearnstudioHorizon/shangcloudmmo-sdk-godot.git"
+    "url": "git+https://github.com/ShangCloudDev/shangcloudmmo-sdk-godot.git"
   },
   "license": "MIT",
   "devDependencies": {
