@@ -367,6 +367,7 @@ void ShangCloudApiClient::start_request(PendingKind p_kind, const String &p_path
 	pending_body = p_body;
 	pending_headers = p_headers;
 	request_sent = false;
+	response_received = false;
 	response_body = "";
 	response_code = 0;
 
@@ -411,10 +412,11 @@ void ShangCloudApiClient::poll_http() {
 
 	if (status == HTTPClient::STATUS_TLS_HANDSHAKE_ERROR || status == HTTPClient::STATUS_CANT_CONNECT ||
 			status == HTTPClient::STATUS_CANT_RESOLVE || status == HTTPClient::STATUS_CONNECTION_ERROR) {
-		fail_request("Connection error");
+		fail_request(String("Connection error (status=") + String::num_int64((int64_t)status) + ")");
 		return;
 	}
 
+	// Send request once the TCP/TLS socket is ready.
 	if (status == HTTPClient::STATUS_CONNECTED && !request_sent) {
 		Error err = http->request(HTTPClient::METHOD_POST, pending_path, pending_headers, pending_body);
 		request_sent = true;
@@ -428,24 +430,51 @@ void ShangCloudApiClient::poll_http() {
 		return;
 	}
 
-	if (status == HTTPClient::STATUS_BODY) {
-		if (http->has_response() && response_code == 0) {
-			response_code = http->get_response_code();
+	// Read response body while available. Keep draining in one poll if data is ready.
+	if (status == HTTPClient::STATUS_BODY || (request_sent && http->has_response() && status == HTTPClient::STATUS_CONNECTED && !response_received)) {
+		if (http->has_response()) {
+			response_received = true;
+			if (response_code == 0) {
+				response_code = http->get_response_code();
+			}
 		}
-		PackedByteArray chunk = http->read_response_body_chunk();
-		if (chunk.size() > 0) {
+		// Drain as much as possible this frame.
+		int safety = 0;
+		while (http->get_status() == HTTPClient::STATUS_BODY && safety < 256) {
+			++safety;
+			PackedByteArray chunk = http->read_response_body_chunk();
+			if (chunk.size() == 0) {
+				break;
+			}
 			response_body += String::utf8((const char *)chunk.ptr(), chunk.size());
 		}
-		return;
+		// Body may still be streaming; wait for CONNECTED/DISCONNECTED after full read.
+		status = http->get_status();
+		if (status == HTTPClient::STATUS_BODY) {
+			return;
+		}
 	}
 
-	// After body is fully read, HTTPClient returns to CONNECTED (keep-alive) or DISCONNECTED
+	// After the request was sent, CONNECTED without headers means "still waiting" (not finished).
+	// Previously this path finished immediately with an empty body and fake HTTP 200, which
+	// produced "Invalid device_authorization response".
 	if (request_sent && (status == HTTPClient::STATUS_CONNECTED || status == HTTPClient::STATUS_DISCONNECTED)) {
-		if (response_code == 0 && http->has_response()) {
-			response_code = http->get_response_code();
+		if (!response_received && !http->has_response()) {
+			// Request in flight; headers/body not yet available.
+			return;
 		}
-		// Drain any leftover
-		while (http->get_status() == HTTPClient::STATUS_BODY) {
+
+		if (http->has_response()) {
+			response_received = true;
+			if (response_code == 0) {
+				response_code = http->get_response_code();
+			}
+		}
+
+		// Drain any leftover body chunks.
+		int safety = 0;
+		while (http->get_status() == HTTPClient::STATUS_BODY && safety < 256) {
+			++safety;
 			http->poll();
 			PackedByteArray chunk = http->read_response_body_chunk();
 			if (chunk.size() == 0) {
@@ -453,7 +482,13 @@ void ShangCloudApiClient::poll_http() {
 			}
 			response_body += String::utf8((const char *)chunk.ptr(), chunk.size());
 		}
+
 		if (response_code == 0) {
+			// Disconnected without a usable status code.
+			if (status == HTTPClient::STATUS_DISCONNECTED && response_body.is_empty()) {
+				fail_request("Disconnected before response");
+				return;
+			}
 			response_code = 200;
 		}
 		finish_request(response_code, response_body);
@@ -518,7 +553,9 @@ void ShangCloudApiClient::handle_device_auth_response(int p_status_code, const S
 	Dictionary da = parse_json_object(p_body);
 	if (!da.has("device_code") || String(da["device_code"]).is_empty()) {
 		device_login_active = false;
-		emit_signal("device_auth_failed", "Invalid device_authorization response");
+		emit_signal("device_auth_failed",
+				String("Invalid device_authorization response (status=") + String::num_int64(p_status_code) +
+						", body=" + p_body + ")");
 		return;
 	}
 
@@ -613,6 +650,7 @@ void ShangCloudApiClient::clear_http() {
 		http->close();
 	}
 	request_sent = false;
+	response_received = false;
 	response_body = "";
 	response_code = 0;
 }

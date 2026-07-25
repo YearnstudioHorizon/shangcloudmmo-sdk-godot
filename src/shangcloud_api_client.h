@@ -79,7 +79,9 @@ private:
 	String pending_body;
 	PackedStringArray pending_headers;
 	bool request_sent = false;
+	bool response_received = false;
 	String response_body;
+	int response_code = 0;
 
 	// Device login state
 	bool device_login_active = false;
@@ -109,8 +111,6 @@ private:
 	void schedule_device_poll();
 	void do_device_poll();
 	void clear_http();
-
-	int response_code = 0;
 };
 
 } // namespace godot
