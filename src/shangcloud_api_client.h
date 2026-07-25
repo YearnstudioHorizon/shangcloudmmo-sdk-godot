@@ -91,6 +91,8 @@ private:
 	bool device_poll_in_flight = false;
 
 	void apply_token_dict(const Dictionary &p_token);
+	/** Authorization 头值：仅 token 本身，不带 Bearer/TokenType（与 Unity 实测一致） */
+	String make_authorization_header_value() const;
 	static void make_pkce(String &r_verifier, String &r_challenge);
 	static String base64_url_encode(const PackedByteArray &p_data);
 	static String form_encode(const Dictionary &p_fields);

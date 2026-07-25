@@ -109,10 +109,19 @@ String ShangCloudApiClient::get_refresh_token() const { return refresh_token; }
 void ShangCloudApiClient::set_client_id(const String &p_id) { client_id = p_id; }
 String ShangCloudApiClient::get_client_id() const { return client_id; }
 
+String ShangCloudApiClient::make_authorization_header_value() const {
+	// 仅发送 token 本身，不带 Bearer/TokenType（与 Unity 实测一致：服务端按裸 token 校验）
+	String token = access_token.strip_edges();
+	if (token.begins_with("Bearer ") || token.begins_with("bearer ")) {
+		token = token.substr(7).strip_edges();
+	}
+	return token;
+}
+
 void ShangCloudApiClient::new_room(const String &p_protocol) {
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	if (!p_protocol.is_empty()) {
 		headers.push_back(String("X-MMO-Protoctl: ") + p_protocol);
 	}
@@ -122,7 +131,7 @@ void ShangCloudApiClient::new_room(const String &p_protocol) {
 void ShangCloudApiClient::join_room(const String &p_room_id, const String &p_protocol) {
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	if (!p_protocol.is_empty()) {
 		headers.push_back(String("X-MMO-Protoctl: ") + p_protocol);
@@ -133,7 +142,7 @@ void ShangCloudApiClient::join_room(const String &p_room_id, const String &p_pro
 void ShangCloudApiClient::set_room_config(const String &p_room_id, bool p_allow_multi_login) {
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	String body = p_allow_multi_login ? "{\"allow_multi_login\":true}" : "{\"allow_multi_login\":false}";
 	start_request(PendingKind::JSON_API, "/api/mmo/room/config", body, headers);
@@ -148,7 +157,7 @@ void ShangCloudApiClient::set_room_data(const String &p_room_id, const String &p
 	}
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	start_request(PendingKind::JSON_API, "/api/mmo/room/data/set", JSON::stringify(obj), headers);
 }
@@ -156,7 +165,7 @@ void ShangCloudApiClient::set_room_data(const String &p_room_id, const String &p
 void ShangCloudApiClient::get_room_data(const String &p_room_id) {
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	start_request(PendingKind::JSON_API, "/api/mmo/room/data/get", "{}", headers);
 }
@@ -166,7 +175,7 @@ void ShangCloudApiClient::delete_room_data(const String &p_room_id, const String
 	obj["key"] = p_key;
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	start_request(PendingKind::JSON_API, "/api/mmo/room/data/delete", JSON::stringify(obj), headers);
 }
@@ -176,7 +185,7 @@ void ShangCloudApiClient::kick_user(const String &p_room_id, const String &p_tar
 	obj["target_uid"] = p_target_uid;
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	start_request(PendingKind::JSON_API, "/api/mmo/room/kick", JSON::stringify(obj), headers);
 }
@@ -184,7 +193,7 @@ void ShangCloudApiClient::kick_user(const String &p_room_id, const String &p_tar
 void ShangCloudApiClient::get_room_user_count(const String &p_room_id) {
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back(String("Authorization: ") + token_type + " " + access_token);
+	headers.push_back(String("Authorization: ") + make_authorization_header_value());
 	headers.push_back(String("X-MMO-Room: ") + p_room_id);
 	start_request(PendingKind::JSON_API, "/api/mmo/room/usercount", "{}", headers);
 }

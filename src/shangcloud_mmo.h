@@ -6,6 +6,8 @@
 #include "mmo_interp_engine.h"
 
 #include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/templates/vector.hpp>
+#include <mutex>
 
 namespace godot {
 
@@ -94,12 +96,28 @@ private:
 	Array members;
 	int room_user_count = 0;
 
+	// 传输层回调若来自非主线程，先入队，_process 再 emit（与 Unity 一致）
+	enum PendingEventKind {
+		PENDING_CONNECTED = 0,
+		PENDING_DISCONNECTED = 1,
+		PENDING_ERROR = 2,
+		PENDING_SERVER_CLOSED = 3,
+	};
+	struct PendingTransportEvent {
+		PendingEventKind kind = PENDING_CONNECTED;
+		String error;
+	};
+	Vector<PendingTransportEvent> pending_events;
+	std::mutex pending_events_mutex;
+
 	void cleanup_transport();
 	void process_business_message(const String &p_message);
 	void clear_members();
 	void upsert_member(const String &p_uid, const String &p_nickname);
 	void remove_member(const String &p_uid);
 	void apply_members_from_pong(const String &p_members_json, int p_count);
+	void enqueue_transport_event(PendingEventKind p_kind, const String &p_error = String());
+	void drain_transport_events();
 };
 
 } // namespace godot

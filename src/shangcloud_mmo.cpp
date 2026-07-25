@@ -105,6 +105,9 @@ void ShangCloudMMO::_bind_methods() {
 }
 
 void ShangCloudMMO::_process(double p_delta) {
+	// 先派发传输层事件，保证 signal 在主线程
+	drain_transport_events();
+
 	// 先推进插帧引擎（收到 sync_var 后逐帧把 current → target）
 	TypedArray<Dictionary> interp_changes = interp_engine.tick(p_delta);
 	for (int i = 0; i < interp_changes.size(); i++) {
@@ -321,23 +324,57 @@ int ShangCloudMMO::get_room_user_count() const {
 	return members.size();
 }
 
-// Transport listener callbacks
+// Transport listener callbacks（可能来自非主线程，仅入队）
 
 void ShangCloudMMO::on_transport_connected() {
-	emit_signal("connected");
+	enqueue_transport_event(PENDING_CONNECTED);
 }
 
 void ShangCloudMMO::on_transport_disconnected() {
-	clear_members();
-	emit_signal("disconnected");
+	enqueue_transport_event(PENDING_DISCONNECTED);
 }
 
 void ShangCloudMMO::on_transport_error(const String &p_error) {
-	emit_signal("connection_error", p_error);
+	enqueue_transport_event(PENDING_ERROR, p_error);
 }
 
 void ShangCloudMMO::on_transport_server_closed() {
-	emit_signal("server_closed");
+	enqueue_transport_event(PENDING_SERVER_CLOSED);
+}
+
+void ShangCloudMMO::enqueue_transport_event(PendingEventKind p_kind, const String &p_error) {
+	std::lock_guard<std::mutex> lock(pending_events_mutex);
+	PendingTransportEvent ev;
+	ev.kind = p_kind;
+	ev.error = p_error;
+	pending_events.push_back(ev);
+}
+
+void ShangCloudMMO::drain_transport_events() {
+	Vector<PendingTransportEvent> batch;
+	{
+		std::lock_guard<std::mutex> lock(pending_events_mutex);
+		batch = pending_events;
+		pending_events.clear();
+	}
+	for (int i = 0; i < batch.size(); i++) {
+		const PendingTransportEvent &ev = batch[i];
+		switch (ev.kind) {
+			case PENDING_CONNECTED:
+				emit_signal("connected");
+				break;
+			case PENDING_DISCONNECTED:
+				clear_members();
+				emit_signal("disconnected");
+				break;
+			case PENDING_ERROR:
+				emit_signal("connection_error", ev.error);
+				break;
+			case PENDING_SERVER_CLOSED:
+				emit_signal("server_closed");
+				break;
+		}
+	}
 }
 
 // Private
