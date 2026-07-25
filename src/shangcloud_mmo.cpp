@@ -51,6 +51,7 @@ void ShangCloudMMO::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("send_raw", "data"), &ShangCloudMMO::send_raw);
 	ClassDB::bind_method(D_METHOD("send_broadcast", "uid", "message", "extra"), &ShangCloudMMO::send_broadcast);
 	ClassDB::bind_method(D_METHOD("send_sync_var", "uid", "vars", "interp"), &ShangCloudMMO::send_sync_var);
+	ClassDB::bind_method(D_METHOD("clear_outgoing_sync_var_cache"), &ShangCloudMMO::clear_outgoing_sync_var_cache);
 	ClassDB::bind_method(D_METHOD("send_join_announcement", "uid", "nickname"), &ShangCloudMMO::send_join_announcement);
 	ClassDB::bind_method(D_METHOD("query_members"), &ShangCloudMMO::query_members);
 	ClassDB::bind_method(D_METHOD("get_member_list"), &ShangCloudMMO::get_member_list);
@@ -225,7 +226,14 @@ void ShangCloudMMO::disconnect_from_edge() {
 		transport->disconnect();
 	}
 	interp_engine.clear();
+	clear_outgoing_sync_var_cache();
 	clear_members();
+}
+
+void ShangCloudMMO::clear_outgoing_sync_var_cache() {
+	outgoing_sync_uid = "";
+	outgoing_sync_vars.clear();
+	outgoing_sync_interp.clear();
 }
 
 double ShangCloudMMO::get_sync_var(const String &p_uid, const String &p_name) const {
@@ -274,15 +282,47 @@ void ShangCloudMMO::send_sync_var(const String &p_uid, const Dictionary &p_vars,
 	ERR_FAIL_COND_MSG(!transport || transport->get_state() != MMOTransport::STATE_CONNECTED,
 			"Cannot send sync_var: not connected");
 
+	// uid 变化时重置发送侧缓存，避免把上一用户的缺省变量带过去
+	if (p_uid != outgoing_sync_uid) {
+		outgoing_sync_uid = p_uid;
+		outgoing_sync_vars.clear();
+		outgoing_sync_interp.clear();
+	}
+
+	// 缺省变量：以缓存为底，本次传入的键覆盖；未传入的键沿用上次值一并发送
+	Array update_keys = p_vars.keys();
+	for (int i = 0; i < update_keys.size(); i++) {
+		Variant key_v = update_keys[i];
+		outgoing_sync_vars[key_v] = p_vars[key_v];
+	}
+	Dictionary merged_vars = outgoing_sync_vars;
+
+	// interp 并集：缓存 ∪ 本次列表（保持稳定顺序）
+	PackedStringArray merged_interp = outgoing_sync_interp;
+	for (int i = 0; i < p_interp.size(); i++) {
+		String name = p_interp[i];
+		bool exists = false;
+		for (int j = 0; j < merged_interp.size(); j++) {
+			if (merged_interp[j] == name) {
+				exists = true;
+				break;
+			}
+		}
+		if (!exists) {
+			merged_interp.push_back(name);
+		}
+	}
+	outgoing_sync_interp = merged_interp;
+
 	// wire 格式（参考 core.js 的 __sync_var__）：{"type":"__sync_var__","uid","vars","interp"}
 	Dictionary dict;
 	dict["type"] = "__sync_var__";
 	dict["uid"] = p_uid;
-	dict["vars"] = p_vars;
+	dict["vars"] = merged_vars;
 
 	Array interp_arr;
-	for (int i = 0; i < p_interp.size(); i++) {
-		interp_arr.push_back(p_interp[i]);
+	for (int i = 0; i < merged_interp.size(); i++) {
+		interp_arr.push_back(merged_interp[i]);
 	}
 	dict["interp"] = interp_arr;
 
@@ -365,6 +405,7 @@ void ShangCloudMMO::drain_transport_events() {
 				break;
 			case PENDING_DISCONNECTED:
 				clear_members();
+				clear_outgoing_sync_var_cache();
 				emit_signal("disconnected");
 				break;
 			case PENDING_ERROR:

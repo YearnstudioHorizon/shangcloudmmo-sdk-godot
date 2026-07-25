@@ -55,7 +55,10 @@ public:
 	// 高级封装：广播消息（wire 格式：{"uid","message","extra"}）
 	void send_broadcast(const String &p_uid, const String &p_message, const String &p_extra);
 	// 高级封装：同步变量（wire 格式：{"type":"__sync_var__","uid","vars","interp"}）
+	// 缺省变量处理：SDK 缓存本端最近一次完整 vars/interp，本次未传入的键自动补发上次值。
 	void send_sync_var(const String &p_uid, const Dictionary &p_vars, const PackedStringArray &p_interp);
+	// 清空本端发送侧缺省变量缓存（断开连接时会自动调用）
+	void clear_outgoing_sync_var_cache();
 	// 高级封装：发送加入房间通知（wire 格式：{"type":"__join__","uid","nickname"}）
 	void send_join_announcement(const String &p_uid, const String &p_nickname);
 
@@ -95,6 +98,11 @@ private:
 	// 房间成员缓存（参考 extension 的 window._mmoMembers）
 	Array members;
 	int room_user_count = 0;
+
+	// 本端发送侧缺省变量缓存：未在本次 send_sync_var 中出现的键自动沿用上次值
+	String outgoing_sync_uid;
+	Dictionary outgoing_sync_vars;
+	PackedStringArray outgoing_sync_interp;
 
 	// 传输层回调若来自非主线程，先入队，_process 再 emit（与 Unity 一致）
 	enum PendingEventKind {
